@@ -1,58 +1,63 @@
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+from pydantic import Field, BaseModel
 from langchain_core.prompts import PromptTemplate
 import os
 
 load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
 
+class Destino(BaseModel):
+    cidade:str = Field(description="A cidade recomendada para visitar")
+    motivo:str = Field(description="O motivo pelo qual é interessante visitar essa cidade")
+
+class Restaurantes(BaseModel):
+    cidade:str = Field(description="A cidade recomendada para visitar")
+    restaurantes:str = Field(description="Restaurantes recomendados na cidade")
+
+parseador_destino = JsonOutputParser(pydantic_object=Destino)
+parseador_restaurantes = JsonOutputParser(pydantic_object=Restaurantes)
+
 if not api_key:
     raise ValueError("GOOGLE_API_KEY não encontrada!")
 
-numero_dias = 7
-numero_criancas = 2
-atividade = "praia"
-
-modelo_de_prompt = PromptTemplate(
+prompt_cidade = PromptTemplate(
     template="""
-    Crie um roteiro de viagem de {dias} dias,
-    para uma família com {numero_criancas} crianças,
-    que gostam de {atividade}
-    """
+    Sugira uma cidade dado o meu interesse por {interesse}.
+
+    {formato_de_saida}
+    """,
+    input_variables=["interesse"],
+    partial_variables={"formato_de_saida": parseador_destino.get_format_instructions()}
 )
 
-prompt = modelo_de_prompt.format(
-    dias=numero_dias,
-    numero_criancas=numero_criancas,
-    atividade=atividade
+prompt_restaurantes = PromptTemplate(
+    template="""
+    Sugira restaurantes populares entre locais em {cidade}
+    {formato_de_saida}
+    """,
+    partial_variables={"formato_de_saida": parseador_restaurantes.get_format_instructions()}
 )
 
-print("Prompt: \n", prompt)
+prompt_cultural = PromptTemplate(
+    template="Sugira atividades e locais culturais em {cidade}"
+)
 
-prompt = f"Crie um roteiro simples (curto) de viagem de {numero_dias} dias, para uma família com {numero_criancas} crianças, que gosta de {atividade}."
-
-cliente = ChatGoogleGenerativeAI(
+modelo = ChatGoogleGenerativeAI(
     model="gemini-3.5-flash-lite",
     google_api_key=api_key
 )
 
-resposta = cliente.invoke([
-    SystemMessage(
-        content="Você é um assistente especializado em roteiros de viagens."
-    ),
-    HumanMessage(
-        content=prompt
-    )
-])
+cadeia_1 = prompt_cidade | modelo | parseador_destino
+cadeia_2 = prompt_restaurantes | modelo | parseador_restaurantes
+cadeia_3 = prompt_cultural | modelo | StrOutputParser()
 
-if isinstance(resposta.content, str):
-    resposta_em_texto = resposta.content
-else:
-    resposta_em_texto = "\n".join(
-        bloco["text"]
-        for bloco in resposta.content
-        if isinstance(bloco, dict) and bloco.get("type") == "text"
-    )
+cadeia = (cadeia_1 | cadeia_2 | cadeia_3)
 
-print(resposta_em_texto)
+resposta = cadeia.invoke({
+    "interesse": "praia"
+})
+
+print(resposta)
